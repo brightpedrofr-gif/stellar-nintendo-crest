@@ -30,6 +30,10 @@ export interface Market {
   cancelled: boolean;
   creator: string;
   betCount: number;
+  proposedOutcome?: boolean;
+  proposalTimestamp?: number;
+  challengeWindowSecs?: number;
+  disputed?: boolean;
 }
 
 // ── Bet ───────────────────────────────────────────────────────────────────────

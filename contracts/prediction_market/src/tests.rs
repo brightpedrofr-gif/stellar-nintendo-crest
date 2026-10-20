@@ -1034,3 +1034,80 @@ fn test_e2e_full_inter_contract_flow() {
     assert_eq!(t.xlm.balance(&charlie), charlie_before);
 }
 
+// ── 43. InvalidAmount and get_stats unchanged ────────────────────────────────
+
+#[test]
+fn test_invalid_amount_and_get_stats_unchanged() {
+    let t = setup();
+    let id = create_test_market(&t);
+    let user = Address::generate(&t.env);
+    fund_user(&t, &user, 200_0000000);
+
+    let stats_before = t.leaderboard_client.get_stats(&user);
+    assert_eq!(stats_before.points, 0);
+    assert_eq!(stats_before.total_bets, 0);
+    assert_eq!(stats_before.won_bets, 0);
+    assert_eq!(stats_before.lost_bets, 0);
+
+    let res_zero = t.client.try_place_bet(&user, &id, &true, &0_i128);
+    assert_eq!(res_zero, Err(Ok(MarketError::InvalidAmount)));
+
+    let res_neg = t.client.try_place_bet(&user, &id, &true, &-50_0000000_i128);
+    assert_eq!(res_neg, Err(Ok(MarketError::InvalidAmount)));
+
+    let stats_after = t.leaderboard_client.get_stats(&user);
+    assert_eq!(stats_after, stats_before);
+}
+
+// ── 44. Emergency pause and unpause circuit breaker ──────────────────────────
+
+#[test]
+fn test_emergency_pause_and_unpause() {
+    let t = setup();
+    let id = create_test_market(&t);
+    let user = Address::generate(&t.env);
+    fund_user(&t, &user, 200_0000000);
+
+    assert!(!t.client.is_paused());
+
+    t.client.pause(&t.admin);
+    assert!(t.client.is_paused());
+
+    let res = t.client.try_place_bet(&user, &id, &true, &100_0000000_i128);
+    assert_eq!(res, Err(Ok(MarketError::ContractPaused)));
+
+    t.client.unpause(&t.admin);
+    assert!(!t.client.is_paused());
+
+    t.client.place_bet(&user, &id, &true, &100_0000000_i128);
+    assert_eq!(t.client.get_market(&id).total_yes, 98_0000000);
+}
+
+// ── 45. Place bet with slippage protection ───────────────────────────────────
+
+#[test]
+fn test_place_bet_with_slippage() {
+    let t = setup();
+    let id = create_test_market(&t);
+    let alice = Address::generate(&t.env);
+    let bob = Address::generate(&t.env);
+    fund_user(&t, &alice, 500_0000000);
+    fund_user(&t, &bob, 500_0000000);
+
+    // Initially 50% (5000 bps)
+    assert_eq!(t.client.compute_current_odds(&id, &true), 5000);
+
+    // Alice bets YES with min_acceptable_odds = 5000 bps (after her bet, YES is 100% = 10000 bps)
+    t.client.place_bet_with_slippage(&alice, &id, &true, &100_0000000_i128, &5000_u32);
+    assert_eq!(t.client.compute_current_odds(&id, &true), 10000);
+
+    // Bob bets NO 100 XLM -> NO becomes 50% (5000 bps); if Bob requires 6000 bps, it reverts
+    let res = t.client.try_place_bet_with_slippage(&bob, &id, &false, &100_0000000_i128, &6000_u32);
+    assert_eq!(res, Err(Ok(MarketError::SlippageExceeded)));
+
+    // With 4500 bps tolerance, Bob's bet succeeds
+    t.client.place_bet_with_slippage(&bob, &id, &false, &100_0000000_i128, &4500_u32);
+    assert_eq!(t.client.compute_current_odds(&id, &false), 5000);
+}
+
+

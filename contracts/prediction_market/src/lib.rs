@@ -53,6 +53,8 @@ pub enum MarketError {
     NotAuthorized      = 18,
     MarketNotCancelled = 19,
     RateLimitExceeded  = 20,
+    ContractPaused     = 21,
+    SlippageExceeded   = 22,
 }
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
@@ -72,6 +74,7 @@ pub enum DataKey {
     FeeRecipient(Address),
     HasReferrer(Address),
     RateWindow,            // packed u64: high32=window_start_hi, low32=count
+    Paused,
 }
 
 // ── Config packed into one instance storage slot ───────────────────────────
@@ -247,6 +250,26 @@ impl PredictionMarketContract {
         Ok(())
     }
 
+    // ── Emergency Circuit Breaker (Pause / Unpause) ───────────────────────
+
+    pub fn pause(env: Env, admin: Address) -> Result<(), MarketError> {
+        Self::require_admin(&env, &admin)?;
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &true);
+        Ok(())
+    }
+
+    pub fn unpause(env: Env, admin: Address) -> Result<(), MarketError> {
+        Self::require_admin(&env, &admin)?;
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &false);
+        Ok(())
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
+    }
+
     // ── Market Management ─────────────────────────────────────────────────
 
     pub fn create_market(
@@ -257,6 +280,7 @@ impl PredictionMarketContract {
         category: Category,
         duration_secs: u64,
     ) -> Result<u64, MarketError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin(&env, &admin)?;
         admin.require_auth();
         Self::check_rate(&env)?;
@@ -297,7 +321,12 @@ impl PredictionMarketContract {
         is_yes: bool,
         amount: i128,
     ) -> Result<(), MarketError> {
+        Self::require_not_paused(&env)?;
         user.require_auth();
+
+        if amount <= 0 {
+            return Err(MarketError::InvalidAmount);
+        }
 
         if amount < MIN_BET {
             return Err(MarketError::BetTooSmall);
@@ -392,6 +421,48 @@ impl PredictionMarketContract {
         Ok(())
     }
 
+    pub fn compute_current_odds(env: Env, market_id: u64, is_yes: bool) -> Result<u32, MarketError> {
+        let market = Self::load_market(&env, market_id)?;
+        let total_pool = market.total_yes + market.total_no;
+        if total_pool == 0 {
+            return Ok(5000); // 50.00% in basis points
+        }
+        let side_pool = if is_yes { market.total_yes } else { market.total_no };
+        Ok(((side_pool * BPS_DENOM) / total_pool) as u32)
+    }
+
+    pub fn place_bet_with_slippage(
+        env: Env,
+        user: Address,
+        market_id: u64,
+        is_yes: bool,
+        amount: i128,
+        min_acceptable_odds: u32,
+    ) -> Result<(), MarketError> {
+        Self::require_not_paused(&env)?;
+        if amount <= 0 {
+            return Err(MarketError::InvalidAmount);
+        }
+        if amount < MIN_BET {
+            return Err(MarketError::BetTooSmall);
+        }
+        let market = Self::load_market(&env, market_id)?;
+        let net = amount * NET_NUMERATOR / BPS_DENOM;
+        let new_yes = if is_yes { market.total_yes + net } else { market.total_yes };
+        let new_no = if !is_yes { market.total_no + net } else { market.total_no };
+        let total_pool = new_yes + new_no;
+        let current_odds = if total_pool > 0 {
+            let side_pool = if is_yes { new_yes } else { new_no };
+            ((side_pool * BPS_DENOM) / total_pool) as u32
+        } else {
+            5000
+        };
+        if current_odds < min_acceptable_odds {
+            return Err(MarketError::SlippageExceeded);
+        }
+        Self::place_bet(env, user, market_id, is_yes, amount)
+    }
+
     // ── Resolution ────────────────────────────────────────────────────────
 
     pub fn resolve_market(
@@ -400,6 +471,7 @@ impl PredictionMarketContract {
         market_id: u64,
         outcome: bool,
     ) -> Result<(), MarketError> {
+        Self::require_not_paused(&env)?;
         caller.require_auth();
         Self::require_admin_or_resolver(&env, &caller)?;
 
@@ -602,6 +674,14 @@ impl PredictionMarketContract {
     }
 
     // ── Internal Helpers ──────────────────────────────────────────────────
+
+    #[inline]
+    fn require_not_paused(env: &Env) -> Result<(), MarketError> {
+        if env.storage().instance().get(&DataKey::Paused).unwrap_or(false) {
+            return Err(MarketError::ContractPaused);
+        }
+        Ok(())
+    }
 
     #[inline]
     fn load_market(env: &Env, market_id: u64) -> Result<Market, MarketError> {

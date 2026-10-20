@@ -17,7 +17,8 @@ interface UseBetResult {
   submit: (
     marketId: number,
     isYes: boolean,
-    amount: number
+    amount: number,
+    minAcceptableOdds?: number
   ) => Promise<void>;
   result: TransactionResult | null;
   loading: boolean;
@@ -34,7 +35,12 @@ export function useBet(): UseBetResult {
   const [error, setError] = useState<string | null>(null);
 
   const submit = useCallback(
-    async (marketId: number, isYes: boolean, amount: number) => {
+    async (
+      marketId: number,
+      isYes: boolean,
+      amount: number,
+      minAcceptableOdds?: number
+    ) => {
       if (!publicKey) {
         setError("Wallet not connected");
         return;
@@ -53,7 +59,8 @@ export function useBet(): UseBetResult {
           marketId,
           isYes,
           amount,
-          signTransaction
+          signTransaction,
+          minAcceptableOdds
         );
 
         setStage("submitting");
