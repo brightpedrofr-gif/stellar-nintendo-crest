@@ -30,10 +30,8 @@ export interface Market {
   cancelled: boolean;
   creator: string;
   betCount: number;
-  proposedOutcome?: boolean;
-  proposalTimestamp?: number;
-  challengeWindowSecs?: number;
-  disputed?: boolean;
+  /** Oracle state, when the market has an outcome submission. */
+  oracleState?: "proposed" | "disputed" | "council" | "finalized";
 }
 
 // ── Bet ───────────────────────────────────────────────────────────────────────
